@@ -1,16 +1,16 @@
 package com.smarttravel.payment_service.dto;
 
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 
 public class PaymentRequestDto {
 
     @NotNull
-    @Min(1)
+    @Positive
     private Long bookingId;
 
     @NotNull
-    @Min(1)
+    @Positive
     private Double amount;
 
     public PaymentRequestDto() {

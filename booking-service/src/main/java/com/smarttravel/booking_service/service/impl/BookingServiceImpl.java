@@ -2,7 +2,13 @@ package com.smarttravel.booking_service.service.impl;
 
 import com.smarttravel.booking_service.client.FlightClient;
 import com.smarttravel.booking_service.client.HotelClient;
-import com.smarttravel.booking_service.dto.*;
+import com.smarttravel.booking_service.dto.BookingRequestDto;
+import com.smarttravel.booking_service.dto.BookingResponseDto;
+import com.smarttravel.booking_service.dto.FlightAvailabilityDto;
+import com.smarttravel.booking_service.dto.HotelAvailabilityDto;
+import com.smarttravel.booking_service.dto.NotificationRequestDto;
+import com.smarttravel.booking_service.dto.UserDto;
+import com.smarttravel.booking_service.dto.PaymentRequestDto;
 import com.smarttravel.booking_service.entity.Booking;
 import com.smarttravel.booking_service.exception.BookingNotFoundException;
 import com.smarttravel.booking_service.exception.ExternalServiceException;
@@ -11,17 +17,13 @@ import com.smarttravel.booking_service.repository.BookingRepository;
 import com.smarttravel.booking_service.service.BookingService;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-import com.smarttravel.booking_service.dto.BookingResponseDto;
-import com.smarttravel.booking_service.entity.Booking;
-import java.util.List;
 
 import java.time.LocalDate;
+import java.util.List;
 
 @Service
-@Transactional
 public class BookingServiceImpl implements BookingService {
 
     private final BookingRepository bookingRepository;
@@ -32,7 +34,7 @@ public class BookingServiceImpl implements BookingService {
     // Base URLs for other services
     private static final String USER_SERVICE_BASE_URL = "http://localhost:8081";
     private static final String NOTIFICATION_SERVICE_BASE_URL = "http://localhost:8086";
-
+    private static final String PAYMENT_SERVICE_BASE_URL = "http://localhost:8085";
 
     public BookingServiceImpl(BookingRepository bookingRepository,
                               WebClient webClient,
@@ -80,9 +82,13 @@ public class BookingServiceImpl implements BookingService {
 
         Booking saved = bookingRepository.save(booking);
 
-        // 7. Booking Service → Notification Service (WebClient REST call)
-        sendBookingNotification(user, saved);
+        // 7. Booking Service → Payment Service (WebClient REST call)
+        //    This is required by the assignment communication flow
+        callPaymentService(saved);
 
+        // 8. Booking Service → Notification Service (WebClient REST call)
+        //    Notify user that booking was created with PENDING status
+        sendBookingNotification(user, saved, "created");
 
         return mapToResponseDto(saved);
     }
@@ -102,7 +108,26 @@ public class BookingServiceImpl implements BookingService {
 
         booking.setStatus(status);
         Booking updated = bookingRepository.save(booking);
+
+        // 🔔 Assignment requirement:
+        // Booking Service → Notification Service (WebClient) after status update (e.g. CONFIRMED)
+        try {
+            UserDto user = fetchUserById(updated.getUserId());
+            sendBookingNotification(user, updated, "updated");
+        } catch (Exception ex) {
+            // We don't fail the booking update if notification fails – just log it.
+            System.out.println("Failed to send notification after status update: " + ex.getMessage());
+        }
+
         return mapToResponseDto(updated);
+    }
+
+    @Override
+    public List<BookingResponseDto> getAllBookings() {
+        List<Booking> bookings = bookingRepository.findAll();
+        return bookings.stream()
+                .map(this::mapToResponseDto)
+                .toList();
     }
 
     // --------- Helper methods ---------
@@ -129,12 +154,45 @@ public class BookingServiceImpl implements BookingService {
         }
     }
 
-    private void sendBookingNotification(UserDto user, Booking booking) {
+    /**
+     * Calls Payment Service via WebClient to process payment
+     * (Booking Service → Payment Service, required by assignment).
+     */
+    private void callPaymentService(Booking booking) {
         try {
+            PaymentRequestDto paymentRequest = new PaymentRequestDto(
+                    booking.getId(),
+                    booking.getTotalAmount()
+            );
+
+            webClient.post()
+                    .uri(PAYMENT_SERVICE_BASE_URL + "/payments")
+                    .bodyValue(paymentRequest)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .block();
+        } catch (Exception ex) {
+            System.out.println("Failed to call Payment Service: " + ex.getMessage());
+            // You could also log or mark booking as PAYMENT_FAILED etc.
+        }
+    }
+
+    /**
+     * Sends a notification to Notification Service using WebClient.
+     *
+     * @param user    the user DTO (id + email)
+     * @param booking the booking entity
+     * @param action  "created" or "updated" (used in message text)
+     */
+    private void sendBookingNotification(UserDto user, Booking booking, String action) {
+        try {
+            String message = "Your booking with id " + booking.getId() +
+                    " is " + action + " with status: " + booking.getStatus();
+
             NotificationRequestDto notificationRequest = new NotificationRequestDto(
                     user.getId(),
                     user.getEmail(),
-                    "Your booking with id " + booking.getId() + " is created with status: " + booking.getStatus(),
+                    message,
                     booking.getId()
             );
 
@@ -164,14 +222,4 @@ public class BookingServiceImpl implements BookingService {
                 booking.getStatus()
         );
     }
-
-    @Override
-    public List<BookingResponseDto> getAllBookings() {
-        List<Booking> bookings = bookingRepository.findAll();
-
-        return bookings.stream()
-                .map(this::mapToResponseDto)
-                .toList();
-    }
-
 }
